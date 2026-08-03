@@ -39,6 +39,7 @@ struct Vector {
   void operator/=(const float divisor) { *this = *this / divisor; }
   void zero() { x = 0, y = 0; }
   float dot(const Vector v2) const { return x * v2.x + y * v2.y; }
+  float magnitude() { return sqrt(x * x + y * y); }
 };
 
 class LatticeNode {
@@ -109,6 +110,8 @@ public:
   float relaxation_time;
   float min_density;
   float max_density;
+  float min_speed;
+  float max_speed;
 
   // The peak:ambient ratio is a pressure ratio, and BGK is only valid while the
   // flow it drives stays well below the lattice sound speed (cs = 0.577). 1.3:1
@@ -117,7 +120,7 @@ public:
           float _base_density = 0.15f, float _blob_radius = SIZE * 0.15f,
           Vector _mean_velocity = Vector(0.0f, 0.0f))
       : relaxation_time{_relaxation_time}, min_density{FLT_MAX},
-        max_density(-FLT_MAX) {
+        max_density(-FLT_MAX), min_speed{FLT_MAX}, max_speed(0.0f) {
     init(_peak_density, _base_density, _blob_radius, _mean_velocity);
   }
 
@@ -158,9 +161,6 @@ public:
   // Here we are assuming perfect elastic container. That is, velocity is
   // reflected symmetrically if it hits the wall
   void stream() {
-    min_density = FLT_MAX;
-    max_density = -FLT_MAX;
-
     for (int x = 0; x < SIZE; x++) {
       for (int y = 0; y < SIZE; y++) {
         for (int v_x = -1; v_x <= 1; v_x++) {
@@ -190,6 +190,10 @@ public:
         new_lattice[x][y].compute_mean_velocity();
         min_density = std::min(min_density, new_lattice[x][y].density);
         max_density = std::max(max_density, new_lattice[x][y].density);
+        min_speed =
+            std::min(min_speed, new_lattice[x][y].mean_velocity.magnitude());
+        max_speed =
+            std::max(max_speed, new_lattice[x][y].mean_velocity.magnitude());
       }
     }
     old_lattice = new_lattice;
@@ -214,33 +218,40 @@ int main() {
   // BGK is only stable for tau > 0.5; the viscosity-derived value lands at
   // 0.50024, right on the boundary, so set it directly for now
   const float relaxation_time = 0.6f;
-
   std::unique_ptr<Lattice> lattice = std::make_unique<Lattice>(relaxation_time);
   Lattice &simulation = *lattice;
 
   // Using Raylib to simulate Fluid Flow
   const int latticeSize = 2;
   InitWindow(SIZE * latticeSize, SIZE * latticeSize, "Fluuuidsss");
-  SetTargetFPS(30);
+  SetTargetFPS(60);
 
   while (!WindowShouldClose()) {
     simulation.apply_step();
 
-    const float span =
+    const float density_span =
         std::max(simulation.max_density - simulation.min_density, 1e-4f);
-
+    const float speed_span =
+        std::max(simulation.max_speed - simulation.min_speed, 1e-4f);
     // Drawing Buffer
     BeginDrawing();
     ClearBackground(WHITE);
     for (int x = 0; x < SIZE; x++) {
       for (int y = 0; y < SIZE; y++) {
         float density = simulation.old_lattice[x][y].density;
-        float scaled = (density - simulation.min_density) / span;
+        float scaled_density =
+            (density - simulation.min_density) / density_span;
+        float speed = simulation.old_lattice[x][y].mean_velocity.magnitude();
+        float scaled_speed = (speed - simulation.min_speed) / speed_span;
+
         // If the solver has diverged, clamp rather than feed NaN to
         // ColorFromHSV;
-        if (!std::isfinite(scaled))
-          scaled = 0.0f;
-        Color c = ColorFromHSV(240.0f * (1.0f - scaled), 1.0f, 1.0f);
+        if (!std::isfinite(scaled_density))
+          scaled_density = 0.0f;
+        if (!std::isfinite(scaled_speed))
+          scaled_speed = 0.0f;
+
+        Color c = ColorFromHSV(240.0f * (1.0f - scaled_density), 1.0f, 1.0f);
         DrawRectangle(x * latticeSize, y * latticeSize, latticeSize,
                       latticeSize, c);
       }
